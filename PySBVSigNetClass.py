@@ -25,7 +25,6 @@ from numpy import matlib
 from rpy2 import robjects 
 import rpy2.robjects.numpy2ri
 from StringIO import StringIO
-from math import exp, log
 from SigNetNode import SigNetNode  # import the node class
 
 
@@ -281,9 +280,9 @@ class PySBVSigNet:
                 print str(parentStates)
 
                 # calculate p(node = 1 | parents)
-                pOneCondOnParents = 1 / (1 + exp( - np.dot(parentStates, nodeParams)))  
-                logProbCondOnParents = log(pOneCondOnParents)
-                logProbZeroCondOnParents = log(np.ones(nrow) - pOneCondOnParents)
+                pOneCondOnParents = 1 / (1 + np.exp( - np.dot(parentStates, nodeParams)))  
+                logProbCondOnParents = np.log(pOneCondOnParents)
+                logProbZeroCondOnParents = np.log(np.ones(nrow) - pOneCondOnParents)
             else:
                 logProbCondOnParents = np.zeros(nrow)
                 logProbZeroCondOnParents = np.zeros(nrow)
@@ -307,17 +306,17 @@ class PySBVSigNet:
                     childParentStates = self.nodeStates[:, childParentIndx]
                     childParentStates[:, curNodePositionInMatrix] = np.ones(nrow)  # set value of current node to 1s
                     childParentStates = np.column_stack((np.ones(nrow), childParentStates)) # padding data with a column ones as bias
-                    pChildCondCurNodeOnes = 1 / (1 + exp(-np.dot(childParentStates, nodeParams)))
-                    logProbDChildCondOne += log ( curChildStates * pChildCondCurNodeOnes + (1 - curChildStates) * (1 - pChildCondCurNodeOnes))
+                    pChildCondCurNodeOnes = 1 / (1 + np.exp(-np.dot(childParentStates, nodeParams)))
+                    logProbDChildCondOne += np.log ( curChildStates * pChildCondCurNodeOnes + (1 - curChildStates) * (1 - pChildCondCurNodeOnes))
     
                     # set the state of the current node (nodeId) to zeros and calculate the probability of observed values of the child
                     childParentStates [:, curNodePositionInMatrix] = np.zeros(nrow)
                     childParentStates = np.column_stack((np.ones(nrow), childParentStates))
-                    pChildCondCurNodeZeros = np.ones(nrow) / (np.ones(nrow) + exp(- np.dot(childParentStates, nodeParams))) 
-                    logProdOfChildCondZeros += log(curChildStates * pChildCondCurNodeZeros + (np.ones(nrow) - curChildStates) * (np.ones(nrow) - pChildCondCurNodeZeros))
+                    pChildCondCurNodeZeros = 1 / (1 + np.exp(- np.dot(childParentStates, nodeParams))) 
+                    logProdOfChildCondZeros += np.log(curChildStates * pChildCondCurNodeZeros + (np.ones(nrow) - curChildStates) * (np.ones(nrow) - pChildCondCurNodeZeros))
 
             # now we can calculate the marginal probability of current node by collecting statistics from Markov blanket
-            curNodeMarginal = 1 / (1 + exp(logProbZeroCondOnParents + logProdOfChildCondZeros - logProbCondOnParents - logProbDChildCondOne))
+            curNodeMarginal = 1 / (1 + np.exp(logProbZeroCondOnParents + logProdOfChildCondZeros - logProbCondOnParents - logProbDChildCondOne))
 
             # generate samples based on the prob
             rProb = np.random.rand(nrow)
