@@ -48,6 +48,12 @@ class PySBVSigNet:
         self.network = None
         self.data = None
         
+        # initial look up table of parameters and mapping between network node 
+        # and datamatrix column indices
+        self.dictNodeParams = dict()
+        self.dictNode2MatrixIndx = dict()
+        self.dictParentOfNodeToMatrixIndx = dict()  # a diction of list indices
+       
         if nodeFileName and edgeFileName:
             self.initNetwork(nodeFileName, edgeFileName)
             
@@ -120,11 +126,7 @@ class PySBVSigNet:
                 print "Cannot add edges between nodes not in the network"
                 continue
             self.network.add_edge(source, sink)
-        print "Added " + str(len(edgeLines)) + " edges"
-            
-        # randomly initialize the parameters of the network    
-        self.randomInitParams()
-        print "Done with creating network"
+        print "Added " + str(len(edgeLines)) + " edges.  Done with creating network"
 
 
     def assocData(self, dataFileName):
@@ -159,37 +161,34 @@ class PySBVSigNet:
         self.data = np.genfromtxt(StringIO(lines), delimiter = ",", usecols=tuple(range(1, len(colnames)))) 
             
         #check in which column the data for a node in graph locates
-        self.dictNode2MatrixIndx = dict()  
         for node in self.network:
             nodeIndex = colnames.index(node)
             if not nodeIndex:  # there is no data for the node
                 raise Exception("The data for node " + node + " is missing.  Quit!")
-            self.dictNode2MatrixIndx[node] = nodeIndex
+            self.dictNode2MatrixIndx[node] = nodeIndex            
         
-        # find column indices for the predecessors of a node
-        self.dictParentOfNodeToMatrixIndx = dict()  # a diction of list
-        for node in self.network:
+            # find column indices for the predecessors 
             preds = self.network.predecessors(node)
             if len(preds) > 0:
-                self.dictParentOfNodeToMatrixIndx[node] = []          
-
-                for p in preds:                
-                    self.dictParentOfNodeToMatrixIndx[node].append(self.dictNode2MatrixIndx[p])  
-                
+                self.dictParentOfNodeToMatrixIndx[node] = [colnames.index(p) for p in preds]
+               
         print "Done with associating data to network"
                 
         
-    def randomInitParams(self):
+    def randomInitParams(self, nChains):
         """Initialize the parameter vector associated with each node 
-           with a random vector sampled from standard Gaussian
+           with a random vector sampled from standard Gaussian.
+           
+           The parameters associated with each node for each MCMC chain is 
+           stored in two dimensional numpy array with nChain * nPredecessors 
         """
-        print "Initialize parameters associated with each node"
+        print "Initialize parameters associated with each node in each MCMC chain"
         for nodeId in self.network:           
             parents = self.network.predecessors(nodeId)
             if len(parents) > 0:
-                self.network.node[nodeId]['nodeObj'].params = np.random.randn(len(parents) + 1)
+                self.dictNodeParams[nodeId] = np.random.randn(nChains, len(parents) + 1)
             else:
-                self.network.node[nodeId]['nodeObj'].params = None
+                self.dictNodeParams[nodeId]  = None
             
             # To do, change intial values for edges with high confidence
             
@@ -213,14 +212,17 @@ class PySBVSigNet:
             function of its parents.  Update of each node is conditioning on 
             its Markov blanket.            
         """
-        # set up Markov chains.  We replcate rows of data matrix "nChain" times
-        # to create multiple chains 
-        self.nodeStates = matlib.repmat(self.data, nChains, 1)
-        
-        # create a matrix to collect mulitple samples from a single chain
-        # to collect expected states of nodes within a chain
-        self.expectedStates = np.zeros(np.shape(self.nodeStates))
+        self.randomInitParams()
+        # set up Markov chains. 
+        self.nodeStates = list()
+        self.expectedStates = list()
+        for c in range(nChains):  
+            # each Markov chain keeps a state matrix
+            self.nodeStates.append(self.data)
+            # each chain collect expected statistics of nodes from samples along the chain
+            self.expectedStates.append(np.zeros(np.shape(self.data)))
 
+                        
         bConverged = False
         nIter = 0
         maxIter = 5000
@@ -252,77 +254,67 @@ class PySBVSigNet:
         return False
                         
 
-    def _updateStates(self):
-        #Performing Gibbs sampling of the node states
+    def _updateStates(self, nChains):
+        nCases, nVariables = np.shape(self.data)
 
-        # interate through all nodes.  Potentially parallelizable
-        for nodeId in self.network:
-            print "Gibbs updating node: " + nodeId + "; has " + str(len(self.network.predecessors(nodeId))) + " predecessors"
-            
-            nodeObj = self.network.node[nodeId]['nodeObj'] 
-            nodeParams = nodeObj.params
-            
-            print "param vector: " + str(nodeObj.params)
-            # skip observed node
-            if nodeObj.bMeasured:
-                continue
-            
-            nrow, ncol = np.shape(self.nodeStates)
-            
-            # collect the state of the parent nodes
-            curNodeMatrixIndx = self.dictNode2MatrixIndx[nodeId]
-            print "Index of current node: " + str(curNodeMatrixIndx)
-            parentIndx = self.dictParentOfNodeToMatrixIndx[nodeId]
-            print "Indices of predecessors: " + str(parentIndx)
-            
-            if len(parentIndx) > 0:  # if the node has parents
-                parentStates = np.column_stack((np.ones(nrow), self.nodeStates[:,parentIndx]))  
-                print str(parentStates)
+        # interate through all nodes. 
+        for c in range(nChains):
+            for nodeId in self.network:
+                # skip observed node
+                if self.network.node[nodeId]['nodeObj'].bMeasured:
+                    continue
+                
+                # collect the state of the predecessors of the node
+                predIndices = self.dictParentOfNodeToMatrixIndx[nodeId]  
+                logProbOneCondOnParents = 0
+                logProbZeroCondOnParents = 0
+                if len(predIndices) > 0:  # if the node has parents  
+                    # calculate p(node = 1 | parents); each chain updated separately   
+                    nodeParams = self.dictNodeParams[nodeId][c,:] 
+                    predStates =  np.column_stack((np.ones(nCases), self.nodeStates[c][:, predIndices])) 
+                    pOneCondOnParents = 1 / (1 + np.exp( - np.dot(predStates, nodeParams)))  
+                    logProbOneCondOnParents  = np.log(pOneCondOnParents)
+                    logProbZeroCondOnParents = np.log(1 - pOneCondOnParents)
 
-                # calculate p(node = 1 | parents)
-                pOneCondOnParents = 1 / (1 + np.exp( - np.dot(parentStates, nodeParams)))  
-                logProbCondOnParents = np.log(pOneCondOnParents)
-                logProbZeroCondOnParents = np.log(np.ones(nrow) - pOneCondOnParents)
-            else:
-                logProbCondOnParents = np.zeros(nrow)
-                logProbZeroCondOnParents = np.zeros(nrow)
+                # collect all evidence from children 
+                logProbDChildCondOne = 0
+                logProdOfChildCondZeros = 0
+                children = self.network.successors(nodeId)
+                curNodeIndx = self.dictNode2MatrixIndx[nodeId]
 
-            # collect all children terms
-            logProbDChildCondOne = 0
-            logProdOfChildCondZeros = 0
-            children = self.network.successors(nodeId)
-            if len(children) > 0:
-                for child in children:   
-                    # collect data and parameters associated with the node
-                    nodeParams = self.network.node[child]['nodeObj'].params 
-                    curChildStates = self.nodeStates[:, self.dictNode2MatrixIndx[child]]                    
-                    childParentIndx = self.dictParentOfNodeToMatrixIndx[child]
-                    
-                    # find out which column the data from the current node is in
-                    curNodePositionInMatrix = childParentIndx.index(curNodeMatrixIndx)  
-    
-                    # Collect states of the predecessors of the child, condition,
-                    # Set the state of current node to ones 
-                    childParentStates = self.nodeStates[:, childParentIndx]
-                    childParentStates[:, curNodePositionInMatrix] = np.ones(nrow)  # set value of current node to 1s
-                    childParentStates = np.column_stack((np.ones(nrow), childParentStates)) # padding data with a column ones as bias
-                    pChildCondCurNodeOnes = 1 / (1 + np.exp(-np.dot(childParentStates, nodeParams)))
-                    logProbDChildCondOne += np.log ( curChildStates * pChildCondCurNodeOnes + (1 - curChildStates) * (1 - pChildCondCurNodeOnes))
-    
-                    # set the state of the current node (nodeId) to zeros and calculate the probability of observed values of the child
-                    childParentStates [:, curNodePositionInMatrix] = np.zeros(nrow)
-                    childParentStates = np.column_stack((np.ones(nrow), childParentStates))
-                    pChildCondCurNodeZeros = 1 / (1 + np.exp(- np.dot(childParentStates, nodeParams))) 
-                    logProdOfChildCondZeros += np.log(curChildStates * pChildCondCurNodeZeros + (np.ones(nrow) - curChildStates) * (np.ones(nrow) - pChildCondCurNodeZeros))
+                if len(children) > 0:
+                    for child in children:   
+                        # collect data and parameters associated with the node
+                        childNodeParams = self.dictNodeParams[child][c,:] 
+                        curChildStates = self.nodeStates[c][:, self.dictNode2MatrixIndx[child] ]                    
+                        
+                        # find out predecessors and the position of curNode in the list
+                        childPredIndices = self.dictParentOfNodeToMatrixIndx[child] 
+                        curNodePosInPredList = childPredIndices.index(curNodeIndx)  
+        
+                        # Collect states of the predecessors of the child
+                        # Set the state of current node to ones 
+                        childPredStatesWithCurSetOne = self.nodeStates[c][:, childPredIndices]    
+                        childPredStatesWithCurSetOne[:, (curNodePosInPredList+1)] = np.ones(nCases)  
+                        childPredStatesWithCurSetOne = np.column_stack((np.ones(nCases), childPredStatesWithCurSetOne)) # padding data with a column ones as bias
+                        pChildCondCurNodeOnes = 1 / (1 + np.exp(-np.dot(childPredStatesWithCurSetOne, childNodeParams)))
+                        logProbDChildCondOne += np.log ( curChildStates * pChildCondCurNodeOnes + (1 - curChildStates) * (1 - pChildCondCurNodeOnes))
+        
+                        # set the state of the current node (nodeId) to zeros and calculate the probability of observed values of the child
+                        childPredStatesWithCurSetZero = self.nodeStates[c][:,childPredIndices]
+                        childPredStatesWithCurSetZero [:, curNodePosInPredList] = np.zeros(nCases)
+                        childPredStatesWithCurSetZero = np.column_stack((np.ones(nCases), childPredStatesWithCurSetZero))
+                        pChildCondCurNodeZeros = 1 / (1 + np.exp(- np.dot(childPredStatesWithCurSetZero, childNodeParams))) 
+                        logProdOfChildCondZeros += np.log(curChildStates * pChildCondCurNodeZeros + (np.ones(nCases) - curChildStates) * (np.ones(nCases) - pChildCondCurNodeZeros))
 
-            # now we can calculate the marginal probability of current node by collecting statistics from Markov blanket
-            curNodeMarginal = 1 / (1 + np.exp(logProbZeroCondOnParents + logProdOfChildCondZeros - logProbCondOnParents - logProbDChildCondOne))
+                # now we can calculate the marginal probability of current node by collecting statistics from Markov blanket
+                curNodeMarginal = 1 / (1 + np.exp(logProbZeroCondOnParents + logProdOfChildCondZeros - logProbOneCondOnParents - logProbDChildCondOne))
 
-            # generate samples based on the prob
-            rProb = np.random.rand(nrow)
-            sampleState = np.zeros(nrow)
-            sampleState[curNodeMarginal >= rProb] = 1.
-            self.nodeStates[:, curNodeMatrixIndx] = sampleState
+                # generate samples based on the prob
+                rProb = np.random.rand(nCases)
+                sampleState = np.zeros(nCases)
+                sampleState[curNodeMarginal >= rProb] = 1.
+                self.nodeStates[c][:, curNodeIndx] = sampleState
 
 
     def _updteParams(self):
@@ -330,10 +322,10 @@ class PySBVSigNet:
         # using expected states of precessors as X and current node states acrss samples as y
 
         for nodeId in self.network:
-            nrow, ncol = np.shape(self.nodeStates)
+            nCases, nVariables = np.shape(self.nodeStates)
             ancestors = self.network.predecessors(nodeId)
             
-            x = np.column_stack((np.ones(nrow), self.expectedStates[:, ancestors]))  # create data matrix containing data of predecessor nodes
+            x = np.column_stack((np.ones(nCases), self.expectedStates[:, ancestors]))  # create data matrix containing data of predecessor nodes
             y = self.nodeStates[:, self.dictNode2MatrixIndx[nodeId]]
 
             # call logistic regression funciton from Rpy
