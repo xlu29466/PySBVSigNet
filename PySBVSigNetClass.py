@@ -21,7 +21,6 @@ proteins.
 
 import networkx as nx
 import numpy as np
-from numpy import matlib
 from rpy2 import robjects 
 import rpy2.robjects.numpy2ri
 from StringIO import StringIO
@@ -31,8 +30,8 @@ from SigNetNode import SigNetNode  # import the node class
 rpy2.robjects.numpy2ri.activate()   # enable directly pass numpy arrary or matrix as arguments to rpy object
 R = robjects.r                      # load R instance
 R.library("glmnet")
-glmnet = R('glmnet')                # make glmnet a callable python object
-lm_fit = R('lm.fit')                # make "lm.fit" a callable Pyhton object
+glmnet = R('glmnet')                # make glmnet from R a callable python object
+lm_fit = R('lm.fit')                # make "lm.fit" from R a callable Pyhton object
 
 class PySBVSigNet:
     ## Constructor.  Create an empty instanc.
@@ -159,18 +158,23 @@ class PySBVSigNet:
             
         # read in data and generate a numpy data matrix
         self.data = np.genfromtxt(StringIO(lines), delimiter = ",", usecols=tuple(range(1, len(colnames)))) 
+        print "Data matrix dimension " + str(np.shape(self.data))
             
-        #check in which column the data for a node in graph locates
+        #check in which column the data for a node in graph locates and populate dictionaries
         for node in self.network:
-            nodeIndex = colnames.index(node)
-            if not nodeIndex:  # there is no data for the node
-                raise Exception("The data for node " + node + " is missing.  Quit!")
+            try:
+                nodeIndex = colnames.index(node) - 1 # minus because datamatrix has rownames
+            except ValueError:
+                raise ValueError("The data for node " + node + " is not in data Matrix.  Quit!")
             self.dictNode2MatrixIndx[node] = nodeIndex            
         
             # find column indices for the predecessors 
             preds = self.network.predecessors(node)
             if len(preds) > 0:
-                self.dictParentOfNodeToMatrixIndx[node] = [colnames.index(p) for p in preds]
+                try: 
+                    self.dictParentOfNodeToMatrixIndx[node] = [(colnames.index(p) - 1) for p in preds]
+                except:
+                    raise ValueError("The data for certain node is not in data matrix.  Quit!")
                
         print "Done with associating data to network"
                 
@@ -192,19 +196,9 @@ class PySBVSigNet:
             
             # To do, change intial values for edges with high confidence
             
-    def initEdgeParam(self, source, sink, priormu):
-        """To initialize the parameter of associated with a specific edge
-           based on prior knowledge.
-           
-           Args:
-             source  The source node of the edge
-             sink    The sink node of  the edge
-             priormu The mean of a Guassiun distribution from which to sample a weight
-        """
-        pass
+   
     
-    
-    def gibbsUpdate(self, nChains = 1, nSamples = 10):
+    def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 5000):
         """ Sampling the states of hidden variables using Gibbs sampling.
             
             Each node take binary state.
@@ -212,7 +206,9 @@ class PySBVSigNet:
             function of its parents.  Update of each node is conditioning on 
             its Markov blanket.            
         """
-        self.randomInitParams()
+        self.randomInitParams(nChains)
+        print "Start Gibbs sampling update."
+        
         # set up Markov chains. 
         self.nodeStates = list()
         self.expectedStates = list()
@@ -225,29 +221,34 @@ class PySBVSigNet:
                         
         bConverged = False
         nIter = 0
-        maxIter = 5000
-        burnIter = 100
+        burnIter = 300
         sampleCount = 0
         while not bConverged:
             nIter +=1
             if nIter > maxIter:
                 break
+            if nIter % 10 == 0:
+                print "."
 
             # E-step of EM
-            self._updateStates()            
+            self._updateStates(nChains)            
             if nIter > burnIter and nIter % 5 == 0:
-                self.expectedStates = self.expectedStates + self.nodeStates
                 sampleCount += 1
+                for c in range(nChains):
+                    self.expectedStates[c] = self.expectedStates[c] + self.nodeStates[c]
+                
                 
             # M-step of EM
             if sampleCount >= nSamples:
                 sampleCount = 0
                  # take expectation of sample states
-                self.expectedStates = self.expectedStates / nSamples
-                self._updateParams()
-                self.expectedStates = np.zeros(np.shape(self.nodeStates))
+                self.expectedStates = map(lambda x: x / nSamples, self.expectedStates)
+                self._updteParams(nChains)
+                for c in range(nChains):
+                    self.expectedStates[c] = np.zeros(np.shape(self.nodeStates))
             
             bConverged = self._checkConvergence()
+            
             
     def _checkConvergence(self):
         # To do, add convergence checking code
@@ -260,7 +261,7 @@ class PySBVSigNet:
         # interate through all nodes. 
         for c in range(nChains):
             for nodeId in self.network:
-                # skip observed node
+                # skip observed nodes
                 if self.network.node[nodeId]['nodeObj'].bMeasured:
                     continue
                 
@@ -269,14 +270,14 @@ class PySBVSigNet:
                 logProbOneCondOnParents = 0
                 logProbZeroCondOnParents = 0
                 if len(predIndices) > 0:  # if the node has parents  
-                    # calculate p(node = 1 | parents); each chain updated separately   
+                    # calculate p(node = 1 | parents);   
                     nodeParams = self.dictNodeParams[nodeId][c,:] 
                     predStates =  np.column_stack((np.ones(nCases), self.nodeStates[c][:, predIndices])) 
                     pOneCondOnParents = 1 / (1 + np.exp( - np.dot(predStates, nodeParams)))  
                     logProbOneCondOnParents  = np.log(pOneCondOnParents)
                     logProbZeroCondOnParents = np.log(1 - pOneCondOnParents)
 
-                # collect all evidence from children 
+                # collect  evidence from all children 
                 logProbDChildCondOne = 0
                 logProdOfChildCondZeros = 0
                 children = self.network.successors(nodeId)
@@ -295,43 +296,42 @@ class PySBVSigNet:
                         # Collect states of the predecessors of the child
                         # Set the state of current node to ones 
                         childPredStatesWithCurSetOne = self.nodeStates[c][:, childPredIndices]    
-                        childPredStatesWithCurSetOne[:, (curNodePosInPredList+1)] = np.ones(nCases)  
+                        childPredStatesWithCurSetOne[:, curNodePosInPredList] = np.ones(nCases)  
                         childPredStatesWithCurSetOne = np.column_stack((np.ones(nCases), childPredStatesWithCurSetOne)) # padding data with a column ones as bias
                         pChildCondCurNodeOnes = 1 / (1 + np.exp(-np.dot(childPredStatesWithCurSetOne, childNodeParams)))
                         logProbDChildCondOne += np.log ( curChildStates * pChildCondCurNodeOnes + (1 - curChildStates) * (1 - pChildCondCurNodeOnes))
         
-                        # set the state of the current node (nodeId) to zeros and calculate the probability of observed values of the child
+                        # set the state of the current node (nodeId) to zeros 
                         childPredStatesWithCurSetZero = self.nodeStates[c][:,childPredIndices]
                         childPredStatesWithCurSetZero [:, curNodePosInPredList] = np.zeros(nCases)
                         childPredStatesWithCurSetZero = np.column_stack((np.ones(nCases), childPredStatesWithCurSetZero))
                         pChildCondCurNodeZeros = 1 / (1 + np.exp(- np.dot(childPredStatesWithCurSetZero, childNodeParams))) 
                         logProdOfChildCondZeros += np.log(curChildStates * pChildCondCurNodeZeros + (np.ones(nCases) - curChildStates) * (np.ones(nCases) - pChildCondCurNodeZeros))
 
-                # now we can calculate the marginal probability of current node by collecting statistics from Markov blanket
+                # now we can calculate the marginal probability of current node 
                 curNodeMarginal = 1 / (1 + np.exp(logProbZeroCondOnParents + logProdOfChildCondZeros - logProbOneCondOnParents - logProbDChildCondOne))
 
-                # generate samples based on the prob
-                rProb = np.random.rand(nCases)
+                # sample states of current node based on the prob, and update 
                 sampleState = np.zeros(nCases)
-                sampleState[curNodeMarginal >= rProb] = 1.
+                sampleState[curNodeMarginal >= np.random.rand(nCases)] = 1.
                 self.nodeStates[c][:, curNodeIndx] = sampleState
 
 
-    def _updteParams(self):
+    def _updteParams(self, nChains):
         # Update the parameter associated with each node, p(n | Pa(n)) using logistic regression,
         # using expected states of precessors as X and current node states acrss samples as y
-
-        for nodeId in self.network:
-            nCases, nVariables = np.shape(self.nodeStates)
-            ancestors = self.network.predecessors(nodeId)
-            
-            x = np.column_stack((np.ones(nCases), self.expectedStates[:, ancestors]))  # create data matrix containing data of predecessor nodes
-            y = self.nodeStates[:, self.dictNode2MatrixIndx[nodeId]]
-
-            # call logistic regression funciton from Rpy
-            fit = lm_fit (x, y, family = "binomial")
-            # extract coefficients from Rpy2 vector object
-            self.network.node[nodeId]['nodeObj'].params = np.array(fit[0])   
+        for c in range(nChains):
+            for nodeId in self.network:
+                nCases, nVariables = np.shape(self.data)
+                predIndices = self.dictParentOfNodeToMatrixIndx[nodeId]                
+                
+                x = np.column_stack((np.ones(nCases), self.expectedStates[c][:, predIndices]))  # create data matrix containing data of predecessor nodes
+                y = self.nodeStates[:, self.dictNode2MatrixIndx[nodeId]]
+                
+                # call logistic regression funciton from Rpy
+                fit = lm_fit (x, y, family = "binomial")
+                # extract coefficients from Rpy2 vector object
+                self.dictNodeParams[nodeId][c,:] = np.array(fit[0])   
                                 
  
  
