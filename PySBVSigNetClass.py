@@ -209,7 +209,7 @@ class PySBVSigNet:
             
    
     
-    def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 5000, p = 0.2):
+    def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 5000, p = 0.3):
         """ Sampling the states of hidden variables using Gibbs sampling.
             
             Each node take binary state.
