@@ -20,18 +20,22 @@ proteins.
 """
 
 import networkx as nx
+import math
 import numpy as np
 from rpy2 import robjects 
-import rpy2.robjects.numpy2ri
 from StringIO import StringIO
 from SigNetNode import SigNetNode  # import the node class
 
-
+import rpy2.robjects.numpy2ri
 rpy2.robjects.numpy2ri.activate()   # enable directly pass numpy arrary or matrix as arguments to rpy object
 R = robjects.r                      # load R instance
 R.library("glmnet")
 glmnet = R('glmnet')                # make glmnet from R a callable python object
-lm_fit = R('lm.fit')                # make "lm.fit" from R a callable Pyhton object
+
+R.library("glm2")
+glm = R("glm")
+
+
 
 class PySBVSigNet:
     ## Constructor.  Create an empty instanc.
@@ -126,7 +130,7 @@ class PySBVSigNet:
                 continue
             self.network.add_edge(source, sink)
         print "Added " + str(len(edgeLines)) + " edges.  Done with creating network"
-
+        
 
     def assocData(self, dataFileName):
         """  Associate data with the network of an instance.
@@ -165,7 +169,21 @@ class PySBVSigNet:
                 
         # read in data and generate a numpy data matrix
         self.data = np.genfromtxt(StringIO(lines), delimiter = ",", usecols=tuple(range(1, len(colnames) + 1)))
-        print "Data matrix dimension " + str(np.shape(self.data))
+        
+        # check the data to see if any variable never change states
+        nCases, nVariables = np.shape(self.data)
+        indexNodesToDelete = np.where(np.sum(self.data, 0) < 2)[0].tolist()
+        nameNodeToDelete = [x for x in colnames if colnames.index(x) in indexNodesToDelete] 
+        print "names of the nodes to delete: ", str(nameNodeToDelete)
+
+        for node in nameNodeToDelete:
+            self.network.remove_node(node)
+            
+        indxNodesToKeep = [x for x in (set(range(nVariables)) - set(indexNodesToDelete))]
+        colnames = [x for x in colnames if x not in nameNodeToDelete] 
+        self.data = self.data[:, indxNodesToKeep]
+        
+        print "Data matrix dimension after cleaning " + str(np.shape(self.data))
             
         #check in which column the data for a node in graph locates and populate dictionaries
         for node in self.network:
@@ -209,7 +227,7 @@ class PySBVSigNet:
             
    
     
-    def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 5000, p = 0.2):
+    def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 5000, p = 0.2, alpha = 0.05):
         """ Sampling the states of hidden variables using Gibbs sampling.
             
             Each node take binary state.
@@ -354,24 +372,24 @@ class PySBVSigNet:
        
         
         
-    def _updteParams(self):
+    def _updteParams(self, alpha = 0.05):
         # Update the parameter associated with each node, p(n | Pa(n)) using logistic regression,
         # using expected states of precessors as X and current node states acrss samples as y
         nCases, nVariables = np.shape(self.data)
         for c in range(self.nChains):
             for nodeId in self.network:
-                print "Estimate parameter for node" + nodeId
+                print "Estimate parameter for node: " + nodeId
                 predIndices = self.dictParentOfNodeToMatrixIndx[nodeId]
                 nodeIdx = self.dictNode2MatrixIndx[nodeId]
                 
                 if len(predIndices) > 0: 
                     x = np.column_stack((np.ones(nCases), self.expectedStates[c][:, predIndices]))  # create data matrix containing data of predecessor nodes
-                    y = self.nodeStates[c][:, nodeIdx]
-                    #print str(x)
-                    #print str(y)
+                    y = robjects.vectors.IntVector(self.nodeStates[c][:, nodeIdx])
+                    print str(x)
+                    print str(y)
                 
                     # call logistic regression funciton from Rpy
-                    fit = lm_fit (x, y, family = "binomial")
+                    fit = glmnet (x, y, alpha = 1, family = "binomial")
                     # extract coefficients from Rpy2 vector object
                     self.dictNodeParams[nodeId][c,:] = np.array(fit[0])  
                     print "params: " + str(self.dictNodeParams[nodeId][c,:])
