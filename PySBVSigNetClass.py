@@ -383,8 +383,9 @@ class PySBVSigNet:
         if not dimStr:
             raise Exception("'parse_glmnet_res' could not determine the dims of beta")
         nVariables , nLambda = map(int, dimStr.split(' x ')) 
-        betaMatrix = np.zeros( (nVariables + 1, nLambda), dtype=np.float)
-        betaMatrix[0,:] = intercepts
+        betaMatrix = np.zeros( (nVariables, nLambda), dtype=np.float)
+        #betaMatrix = np.zeros( (nVariables + 1, nLambda), dtype=np.float)
+        #betaMatrix[0,:] = intercepts
         
         # glmnet print beta matrix in mulitple blocks with 
         # nVariable * blockSize
@@ -398,6 +399,9 @@ class PySBVSigNet:
                 rowIndx = int(m.group(0)[1:len(m.group(0))]) 
             if rowIndx == 1:
                 curBlockColStart += blockSize
+                
+            # set 'rowIndx' as start from 0
+            rowIndx -= 1
 
             fields = line.rstrip().split()
             fields.pop(0)
@@ -428,11 +432,15 @@ class PySBVSigNet:
                 nodeIdx = self.dictNode2MatrixIndx[nodeId]
                 
                 if len(predIndices) > 0: 
-                    x = self.expectedStates[c][:, predIndices]  
+                    x = np.column_stack((np.ones(nCases), self.expectedStates[c][:, predIndices]))
+                    
+                    #print str(x)
+                    #print str(np.shape(x))
                     y = robjects.vectors.IntVector(self.nodeStates[c][:, nodeIdx])
+                    #print str(y)
                 
                     # call logistic regression using glmnet from Rpy
-                    fit = glmnet (x, y, alpha = .05, family = "binomial")
+                    fit = glmnet (x, y, alpha = .05, family = "binomial", intercept = 0)
                     # extract coefficients from Rpy2 vector object
                     self.dictNodeParams[nodeId][c,:] = self.parseGlmnetCoef(fit)  
                     #print "params: " + str(self.dictNodeParams[nodeId][c,:])
