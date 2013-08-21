@@ -5,6 +5,8 @@ Created on Thu Aug 15 21:25:19 2013
 @author: xinghualu
 """
 
+import pickle
+
 from SigNetNode import SigNetNode
 from PySBVSigNetClass import PySBVSigNet
 
@@ -16,4 +18,6 @@ net = PySBVSigNet(nodeFile, edgeFile)
 
 net.assocData("Data/Rat.data.matrix.csv")
 
-net.gibbsUpdate()
+trainedNetwork = net.gibbsUpdate()
+
+pickle.dump(trainedNetwork, open("trainedSBVSigNet.pickle", 'wb'))

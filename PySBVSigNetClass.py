@@ -31,10 +31,6 @@ R = robjects.r                      # load R instance
 R.library("glmnet")
 glmnet = R('glmnet')                # make glmnet from R a callable python object
 
-R.library("glm2")
-glm = R("glm")
-
-
 
 class PySBVSigNet:
     ## Constructor.  Create an empty instanc.
@@ -55,7 +51,8 @@ class PySBVSigNet:
         self.dictNodeParams = dict()
         self.dictNode2MatrixIndx = dict()
         self.dictParentOfNodeToMatrixIndx = dict()  # a diction of list indices
-       
+        self.likelihood = []
+        
         if nodeFileName and edgeFileName:
             self.initNetwork(nodeFileName, edgeFileName)
             
@@ -226,7 +223,7 @@ class PySBVSigNet:
    
     
 
-    def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 5000, p = 0.2, alpha = 0.05):
+    def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 5000, p = 0.2, alpha = 0.1):
         """ Sampling the states of hidden variables using Gibbs sampling.
             
             Each node take binary state.
@@ -281,17 +278,29 @@ class PySBVSigNet:
                  # take expectation of sample states
                 self.expectedStates = map(lambda x: x / nSamples, self.expectedStates)
                 self._updteParams()
-                print "Iteration: " + str(nIter) + "; log marginal probability of observed variables: " + str(self.calcEvidenceMarginal())
+                likelihood = self.calcEvidenceMarginal()
+                self.likelihood.append(likelihood)    
+                print "Iteration: " + str(nIter) + "; log marginal probability of observed variables: " + str(likelihood)
+
                 for c in range(self.nChains):
                     self.expectedStates[c] = np.zeros(np.shape(self.data))
             
             bConverged = self._checkConvergence()
+            
+        self.trimEdgeWithLasso(self.nChains)
+        return self.network
              
             
             
     def _checkConvergence(self):
         # To do, add convergence checking code
-        return False
+        if len(self.likelihood) > 20:
+            ratio = abs(self.likelihood[-1] - self.likelihood[-2]) / abs(self.likelihood[-2])
+        
+            return ratio <= 0.001
+        else:
+            return False
+           
                         
 
     def _updateStates(self):
@@ -371,21 +380,20 @@ class PySBVSigNet:
         
         
     def parseGlmnetCoef(self, glmnet_res):        
-        """ Parse the 'beta' matrix returned by calling glmnet through RPy2."""
-            
-        #The results returned by glmnet is listvector object 
-        # intercept is stored in a vector 'a0' with length of nLambda, see glmnet
-        intercepts = np.array(glmnet_res.rx('a0')[0])
-        
-        # read in lines of beta matrix txt, which is a nVariables * nLambda
+        """ Parse the 'beta' matrix returned by calling glmnet through RPy2.
+            Return the first column of 'beta' matrix of the glmnet object 
+            with all none zero values returned by the glmnet
+            """
+                    
+        # Read in lines of beta matrix txt, which is a nVariables * nLambda.
+        # Since we call glmnet by padding x with a column of 1s, we only work
+        # with the 'beta' matrix returned by fit
         betaLines = StringIO(str(glmnet_res.rx('beta'))).readlines()
         dimStr = re.search("\d+\s+x\s+\d+", betaLines[1]).group(0)
         if not dimStr:
             raise Exception("'parse_glmnet_res' could not determine the dims of beta")
         nVariables , nLambda = map(int, dimStr.split(' x ')) 
         betaMatrix = np.zeros( (nVariables, nLambda), dtype=np.float)
-        #betaMatrix = np.zeros( (nVariables + 1, nLambda), dtype=np.float)
-        #betaMatrix[0,:] = intercepts
         
         # glmnet print beta matrix in mulitple blocks with 
         # nVariable * blockSize
@@ -426,8 +434,9 @@ class PySBVSigNet:
         # Update the parameter associated with each node, p(n | Pa(n)) using logistic regression,
         # using expected states of precessors as X and current node states acrss samples as y
         nCases, nVariables = np.shape(self.data)
-        for c in range(self.nChains):
-            for nodeId in self.network:
+        fitResults = []
+        for nodeId in self.network:
+            for c in range(self.nChains):            
                 predIndices = self.dictParentOfNodeToMatrixIndx[nodeId]
                 nodeIdx = self.dictNode2MatrixIndx[nodeId]
                 
@@ -441,9 +450,11 @@ class PySBVSigNet:
                 
                     # call logistic regression using glmnet from Rpy
                     fit = glmnet (x, y, alpha = .05, family = "binomial", intercept = 0)
+                    fitResults.append(fit)
                     # extract coefficients from Rpy2 vector object
                     self.dictNodeParams[nodeId][c,:] = self.parseGlmnetCoef(fit)  
-                    #print "params: " + str(self.dictNodeParams[nodeId][c,:])
+        
+        self.network.node[nodeId]['nodeObj'].fitResults = fitResults
                 
                 
     def calcEvidenceMarginal(self):
@@ -464,15 +475,23 @@ class PySBVSigNet:
         
         
     def trimEdgeWithLasso(self, nchains):
-        self._updteParams(self, alpha = 1) # set alpha to 1 perform Lasso regression
+        """ This function set alpha to 1 perform Lasso regression.  The results 
+            is saved in the networks nodes. 
+            
+            Value:  An intance of networkx object, in which the nodes contains
+                    the RPy2 object of last fit
+        """
         
-        # go through all chains 
-        for node in self.network:
-            preds = self.network.predecessors(node)
-            nodeParams = self.dictNodeParams[node] # a nChain * nPred matrix
-            #check how many types in the chains an edge is set to zero
-            nZeros = np.sum(nodeParams==0, 0)  # a row sum
-            for j in range(1, len(nZeros)):
-                if j >= math.ceil (nchains / 2):  # close to half chain set zero
-                    self.network.remove_edge(preds[j], node)
+        self._updteParams(self, alpha = 1) 
+        return self.network
+        
+#        # go through all chains 
+#        for node in self.network:
+#            preds = self.network.predecessors(node)
+#            nodeParams = self.dictNodeParams[node] # a nChain * nPred matrix
+#            #check how many types in the chains an edge is set to zero
+#            nZeros = np.sum(nodeParams==0, 0)  # a row sum
+#            for j in range(1, len(nZeros)):
+#                if j >= math.ceil (nchains / 2):  # close to half chain set zero
+#                    self.network.remove_edge(preds[j], node)
 
