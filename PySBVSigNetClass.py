@@ -18,9 +18,8 @@ for modeling causal relationship between proetin kinases and their target
 proteins.
 
 """
-
+import re, math
 import networkx as nx
-import math
 import numpy as np
 from rpy2 import robjects 
 from StringIO import StringIO
@@ -174,7 +173,6 @@ class PySBVSigNet:
         nCases, nVariables = np.shape(self.data)
         indexNodesToDelete = np.where(np.sum(self.data, 0) < 2)[0].tolist()
         nameNodeToDelete = [x for x in colnames if colnames.index(x) in indexNodesToDelete] 
-        print "names of the nodes to delete: ", str(nameNodeToDelete)
 
         for node in nameNodeToDelete:
             self.network.remove_node(node)
@@ -227,11 +225,8 @@ class PySBVSigNet:
             
    
     
-<<<<<<< HEAD
+
     def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 5000, p = 0.2, alpha = 0.05):
-=======
-    def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 5000, p = 0.3):
->>>>>>> 8dd8f99aa52981ee7b8dbff8fdffbacdb761a254
         """ Sampling the states of hidden variables using Gibbs sampling.
             
             Each node take binary state.
@@ -373,8 +368,55 @@ class PySBVSigNet:
         # now we can calculate the marginal probability of current node 
         curNodeMarginal = 1 / (1 + np.exp(logProbZeroCondOnParents + logProdOfChildCondZeros - logProbOneCondOnParents - logProbDChildCondOne))
         return curNodeMarginal
-       
         
+        
+    def parseGlmnetCoef(self, glmnet_res):        
+        """ Parse the 'beta' matrix returned by calling glmnet through RPy2."""
+            
+        #The results returned by glmnet is listvector object 
+        # intercept is stored in a vector 'a0' with length of nLambda, see glmnet
+        intercepts = np.array(glmnet_res.rx('a0')[0])
+        
+        # read in lines of beta matrix txt, which is a nVariables * nLambda
+        betaLines = StringIO(str(glmnet_res.rx('beta'))).readlines()
+        dimStr = re.search("\d+\s+x\s+\d+", betaLines[1]).group(0)
+        if not dimStr:
+            raise Exception("'parse_glmnet_res' could not determine the dims of beta")
+        nVariables , nLambda = map(int, dimStr.split(' x ')) 
+        betaMatrix = np.zeros( (nVariables + 1, nLambda), dtype=np.float)
+        betaMatrix[0,:] = intercepts
+        
+        # glmnet print beta matrix in mulitple blocks with 
+        # nVariable * blockSize
+        blockSize = len(betaLines[4].split()) - 1
+        curBlockColStart = - blockSize
+        for line in betaLines:  #read in blocks
+            m = re.search('^V\d+', line)
+            if not m:  # only find the lines begins with 'V\d'
+                continue
+            else:
+                rowIndx = int(m.group(0)[1:len(m.group(0))]) 
+            if rowIndx == 1:
+                curBlockColStart += blockSize
+
+            fields = line.rstrip().split()
+            fields.pop(0)
+            if len(fields) != blockSize:
+                blockSize = len(fields)
+            for j in range(blockSize):
+                if fields[j] == '.':
+                    continue
+                else:
+                    betaMatrix[rowIndx, curBlockColStart + j] = float(fields[j])                 
+                            
+        # scan through the beta matrix and return the first all none zero 
+        # or the last column                    
+        for j in range(nLambda):
+            if not np.any(betaMatrix[:, j] == 0.):
+                break
+        
+        return betaMatrix[:,j]        
+      
         
     def _updteParams(self, alpha = 0.05):
         # Update the parameter associated with each node, p(n | Pa(n)) using logistic regression,
@@ -382,21 +424,18 @@ class PySBVSigNet:
         nCases, nVariables = np.shape(self.data)
         for c in range(self.nChains):
             for nodeId in self.network:
-                print "Estimate parameter for node: " + nodeId
                 predIndices = self.dictParentOfNodeToMatrixIndx[nodeId]
                 nodeIdx = self.dictNode2MatrixIndx[nodeId]
                 
                 if len(predIndices) > 0: 
-                    x = np.column_stack((np.ones(nCases), self.expectedStates[c][:, predIndices]))  # create data matrix containing data of predecessor nodes
+                    x = self.expectedStates[c][:, predIndices]  
                     y = robjects.vectors.IntVector(self.nodeStates[c][:, nodeIdx])
-                    print str(x)
-                    print str(y)
                 
-                    # call logistic regression funciton from Rpy
-                    fit = glmnet (x, y, alpha = 1, family = "binomial")
+                    # call logistic regression using glmnet from Rpy
+                    fit = glmnet (x, y, alpha = .05, family = "binomial")
                     # extract coefficients from Rpy2 vector object
-                    self.dictNodeParams[nodeId][c,:] = np.array(fit[0])  
-                    print "params: " + str(self.dictNodeParams[nodeId][c,:])
+                    self.dictNodeParams[nodeId][c,:] = self.parseGlmnetCoef(fit)  
+                    #print "params: " + str(self.dictNodeParams[nodeId][c,:])
                 
                 
     def calcEvidenceMarginal(self):
@@ -416,7 +455,16 @@ class PySBVSigNet:
         return logTotalMarginal / c 
         
         
-    def trimEdgeWithLasso(self):
-        pass
-    
-            
+    def trimEdgeWithLasso(self, nchains):
+        self._updteParams(self, alpha = 1) # set alpha to 1 perform Lasso regression
+        
+        # go through all chains 
+        for node in self.network:
+            preds = self.network.predecessors(node)
+            nodeParams = self.dictNodeParams[node] # a nChain * nPred matrix
+            #check how many types in the chains an edge is set to zero
+            nZeros = np.sum(nodeParams==0, 0)  # a row sum
+            for j in range(1, len(nZeros)):
+                if j >= math.ceil (nchains / 2):  # close to half chain set zero
+                    self.network.remove_edge(preds[j], node)
+
