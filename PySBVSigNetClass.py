@@ -223,7 +223,7 @@ class PySBVSigNet:
    
     
 
-    def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 5000, p = 0.2, alpha = 0.1):
+    def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 1000, p = 0.2, alpha = 0.1):
         """ Sampling the states of hidden variables using Gibbs sampling.
             
             Each node take binary state.
@@ -257,7 +257,6 @@ class PySBVSigNet:
                         
         bConverged = False
         nIter = 0
-        burnIter = 300
         sampleCount = 0
         while not bConverged:
             nIter +=1
@@ -280,7 +279,7 @@ class PySBVSigNet:
                 self._updteParams()
                 likelihood = self.calcEvidenceMarginal()
                 self.likelihood.append(likelihood)    
-                print "Iteration: " + str(nIter) + "; log marginal probability of observed variables: " + str(likelihood)
+                print "nIter: " + str(nIter) + "; log marginal probability of observed variables: " + str(likelihood)
 
                 for c in range(self.nChains):
                     self.expectedStates[c] = np.zeros(np.shape(self.data))
@@ -294,13 +293,13 @@ class PySBVSigNet:
             
     def _checkConvergence(self):
         # To do, add convergence checking code
-        if len(self.likelihood) > 20:
-            ratio = abs(self.likelihood[-1] - self.likelihood[-2]) / abs(self.likelihood[-2])
-        
-            return ratio <= 0.001
-        else:
+        if len(self.likelihood) < 10:
             return False
-           
+            
+        ml = np.mean(self.likelihood[-4:-1])
+        ratio = abs(self.likelihood[-1] - ml ) / abs(ml)        
+        return ratio <= 0.01
+
                         
 
     def _updateStates(self):
@@ -430,31 +429,40 @@ class PySBVSigNet:
         return betaMatrix[:,j]        
       
         
-    def _updteParams(self, alpha = 0.05):
+    def _updteParams(self, alpha = 0.05, keepRes = False):
         # Update the parameter associated with each node, p(n | Pa(n)) using logistic regression,
         # using expected states of precessors as X and current node states acrss samples as y
         nCases, nVariables = np.shape(self.data)
-        fitResults = []
         for nodeId in self.network:
-            for c in range(self.nChains):            
-                predIndices = self.dictParentOfNodeToMatrixIndx[nodeId]
-                nodeIdx = self.dictNode2MatrixIndx[nodeId]
-                
-                if len(predIndices) > 0: 
+            predIndices = self.dictParentOfNodeToMatrixIndx[nodeId]
+            nodeIdx = self.dictNode2MatrixIndx[nodeId]
+            
+            if keepRes:
+                self.network.node[nodeId]['nodeObj'].fitResults = []
+
+            for c in range(self.nChains): 
+                if len(predIndices) > 0:  # no parameters if no predecessors
                     x = np.column_stack((np.ones(nCases), self.expectedStates[c][:, predIndices]))
+                    y = self.nodeStates[c][:, nodeIdx]
                     
-                    #print str(x)
-                    #print str(np.shape(x))
-                    y = robjects.vectors.IntVector(self.nodeStates[c][:, nodeIdx])
-                    #print str(y)
+                    #check if all y are of same value, which will lead to problem for glmnet
+                    if sum(y) == nCases:
+                        y[0] = 0
+                        y[np.random.rand(len(y)) < .1] = 0
+                    elif sum( map(lambda x: 1 - x, y)) == nCases:
+                        y[0] = 1
+                        y[np.random.rand(len(y)) < .1] = 1
+                    
+                    y = robjects.vectors.IntVector(y)
                 
                     # call logistic regression using glmnet from Rpy
                     fit = glmnet (x, y, alpha = .05, family = "binomial", intercept = 0)
-                    fitResults.append(fit)
                     # extract coefficients from Rpy2 vector object
-                    self.dictNodeParams[nodeId][c,:] = self.parseGlmnetCoef(fit)  
+                    self.dictNodeParams[nodeId][c,:] = self.parseGlmnetCoef(fit) 
+                    
+                    if keepRes:
+                        self.network.node[nodeId]['nodeObj'].fitResults.append(fit)
         
-        self.network.node[nodeId]['nodeObj'].fitResults = fitResults
                 
                 
     def calcEvidenceMarginal(self):
@@ -474,7 +482,7 @@ class PySBVSigNet:
         return logTotalMarginal / c 
         
         
-    def trimEdgeWithLasso(self, nchains):
+    def trimEdgeWithLasso(self,  a = 1):
         """ This function set alpha to 1 perform Lasso regression.  The results 
             is saved in the networks nodes. 
             
@@ -482,16 +490,6 @@ class PySBVSigNet:
                     the RPy2 object of last fit
         """
         
-        self._updteParams(self, alpha = 1) 
+        self._updteParams(self, alpha = a , keepRes = True) 
         return self.network
         
-#        # go through all chains 
-#        for node in self.network:
-#            preds = self.network.predecessors(node)
-#            nodeParams = self.dictNodeParams[node] # a nChain * nPred matrix
-#            #check how many types in the chains an edge is set to zero
-#            nZeros = np.sum(nodeParams==0, 0)  # a row sum
-#            for j in range(1, len(nZeros)):
-#                if j >= math.ceil (nchains / 2):  # close to half chain set zero
-#                    self.network.remove_edge(preds[j], node)
-
