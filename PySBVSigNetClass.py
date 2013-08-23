@@ -18,7 +18,7 @@ for modeling causal relationship between proetin kinases and their target
 proteins.
 
 """
-import re, math
+import re, math, cPickle
 import networkx as nx
 import numpy as np
 from rpy2 import robjects 
@@ -254,7 +254,7 @@ class PySBVSigNet:
             # each chain collect expected statistics of nodes from samples along the chain
             self.expectedStates.append(np.zeros(np.shape(self.data)))
 
-                        
+        optLikelihood = float("-inf")
         bConverged = False
         nIter = 0
         sampleCount = 0
@@ -276,29 +276,36 @@ class PySBVSigNet:
                 sampleCount = 0
                  # take expectation of sample states
                 self.expectedStates = map(lambda x: x / nSamples, self.expectedStates)
-                self._updteParams()
+                self._updteParams(keepRes = True)
                 likelihood = self.calcEvidenceMarginal()
-                self.likelihood.append(likelihood)    
+                self.likelihood.append(likelihood) 
                 print "nIter: " + str(nIter) + "; log marginal probability of observed variables: " + str(likelihood)
-
+                
+                # collect the current best fit models
+                if likelihood > optLikelihood:
+                    bestModels = dict()
+                    for nodeId in self.network:
+                        bestModels[nodeId] = self.network.node[nodeId]['nodeObj'].fitResults
+                    cPickle.dump(bestModels, open("curBestModels.cpickle", 'wb'))
+                    
                 for c in range(self.nChains):
                     self.expectedStates[c] = np.zeros(np.shape(self.data))
             
             bConverged = self._checkConvergence()
             
-        self.trimEdgeWithLasso(self.nChains)
+        self.trimEdgeWithLasso()
         return self.network
              
             
             
     def _checkConvergence(self):
         # To do, add convergence checking code
-        if len(self.likelihood) < 10:
+        if len(self.likelihood) < 25:
             return False
             
-        ml = np.mean(self.likelihood[-4:-1])
+        ml = np.mean(self.likelihood[-3:-1])
         ratio = abs(self.likelihood[-1] - ml ) / abs(ml)        
-        return ratio <= 0.01
+        return ratio <= 0.001
 
                         
 
@@ -445,15 +452,23 @@ class PySBVSigNet:
                     x = np.column_stack((np.ones(nCases), self.expectedStates[c][:, predIndices]))
                     y = self.nodeStates[c][:, nodeIdx]
                     
-                    #check if all y are of same value, which will lead to problem for glmnet
-                    if sum(y) == nCases:
-                        y[0] = 0
-                        y[np.random.rand(len(y)) < .1] = 0
+                    #check if all x and y are of same value, which will lead to problem for glmnet
+                    rIndx = map(lambda z: int(math.floor(z)), np.random.rand(3) * nCases)
+                    if sum(y) == nCases:                        
+                        y[rIndx] = 0                        
                     elif sum( map(lambda x: 1 - x, y)) == nCases:
-                        y[0] = 1
-                        y[np.random.rand(len(y)) < .1] = 1
-                    
+                        y[rIndx] = 1        
                     y = robjects.vectors.IntVector(y)
+                        
+                    allOnes = np.where(np.sum(x[:, 1:nVariables],0) == nCases)
+                    for c in allOnes[0]:
+                        rIndx = map(lambda z: int(math.floor(z)), np.random.rand(3) * nCases)
+                        x[rIndx, c+1] = 0 
+                    allZeros = np.where(np.sum(np.ones(np.shape(x)) - x, 0) == nCases) 
+                    for c in allZeros[0]:
+                        rIndx = map(lambda z: int(math.floor(z)), np.random.rand(3) * nCases)
+                        x[rIndx, c] = 1
+                    
                 
                     # call logistic regression using glmnet from Rpy
                     fit = glmnet (x, y, alpha = .05, family = "binomial", intercept = 0)
@@ -482,7 +497,7 @@ class PySBVSigNet:
         return logTotalMarginal / c 
         
         
-    def trimEdgeWithLasso(self,  a = 1):
+    def trimEdgeWithLasso(self,  lassoFactor = 1):
         """ This function set alpha to 1 perform Lasso regression.  The results 
             is saved in the networks nodes. 
             
@@ -490,6 +505,6 @@ class PySBVSigNet:
                     the RPy2 object of last fit
         """
         
-        self._updteParams(self, alpha = a , keepRes = True) 
+        self._updteParams(alpha = lassoFactor , keepRes = True) 
         return self.network
         
