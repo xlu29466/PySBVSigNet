@@ -292,8 +292,7 @@ class PySBVSigNet:
                     self.expectedStates[c] = np.zeros(np.shape(self.data))
             
             bConverged = self._checkConvergence()
-            
-        self.trimEdgeWithLasso()
+        self._updteParams(alpha = 0.9, keepRes = True)
         return self.network
              
             
@@ -497,14 +496,4 @@ class PySBVSigNet:
         return logTotalMarginal / c 
         
         
-    def trimEdgeWithLasso(self,  lassoFactor = 1):
-        """ This function set alpha to 1 perform Lasso regression.  The results 
-            is saved in the networks nodes. 
-            
-            Value:  An intance of networkx object, in which the nodes contains
-                    the RPy2 object of last fit
-        """
-        
-        self._updteParams(alpha = lassoFactor , keepRes = True) 
-        return self.network
-        
+      
