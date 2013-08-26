@@ -199,8 +199,6 @@ class PySBVSigNet:
                 self.dictParentOfNodeToMatrixIndx[node] = []
                
         print "Done with associating data to network"
-        #print str(self.dictNode2MatrixIndx)
-        #print str(self.dictParentOfNodeToMatrixIndx)
                 
         
     def randomInitParams(self):
@@ -219,9 +217,7 @@ class PySBVSigNet:
                 self.dictNodeParams[nodeId]  = None
             
             # To do, change intial values for edges with high confidence
-            
-   
-    
+              
 
     def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 1000, p = 0.2, alpha = 0.1):
         """ Sampling the states of hidden variables using Gibbs sampling.
@@ -292,7 +288,6 @@ class PySBVSigNet:
                     self.expectedStates[c] = np.zeros(np.shape(self.data))
             
             bConverged = self._checkConvergence()
-        self._updteParams(alpha = 0.9, keepRes = True)
         return self.network
              
             
@@ -426,10 +421,11 @@ class PySBVSigNet:
                 else:
                     betaMatrix[rowIndx, curBlockColStart + j] = float(fields[j])                 
                             
-        # scan through the beta matrix and return the first all none zero 
+        # scan through the beta matrix and return the first column with >4 none zeros 
         # or the last column                    
         for j in range(nLambda):
-            if not np.any(betaMatrix[:, j] == 0.):
+            nParams = sum(betaMatrix[:, j] != 0.)
+            if nParams >= 4:
                 break
         
         return betaMatrix[:,j]        
@@ -493,7 +489,7 @@ class PySBVSigNet:
                 logProb = np.log(curNodeStates * nodeProb + (1 - curNodeStates) * (1 - nodeProb) )
                 logTotalMarginal += sum(logProb)
                 
-        return logTotalMarginal / c 
+        return logTotalMarginal / self.nChains 
         
         
       
