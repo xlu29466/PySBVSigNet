@@ -19,6 +19,6 @@ net = PySBVSigNet(nodeFile, edgeFile)
 
 net.assocData("Data/Rat.data.matrix.csv")
 
-trainedNetwork = net.gibbsUpdate(pickleDumpFile="tmpHumanAugmentedSBVSigNet-alpha-07.pickle", alpha = .7)
+trainedNetwork = net.gibbsUpdate(pickleDumpFile="tmpHumanAugmentedSBVSigNet-alpha-02.pickle", alpha = .2)
 
-pickle.dump(trainedNetwork, open("convergedHumanAugmentedSBVSigNet-alpha-07.pickle", 'wb'))
+pickle.dump(trainedNetwork, open("convergedHumanAugmentedSBVSigNet-alpha-02.pickle", 'wb'))

@@ -239,8 +239,7 @@ class PySBVSigNet:
         # set up Markov chains. 
         self.nodeStates = list()
         self.expectedStates = list()
-        evidenceNodes = [n  for n in self.network.nodes() if self.network.node[n]['nodeObj']] 
-        hiddenNodes = list(set(self.network.nodes()) - set(evidenceNodes))
+        hiddenNodes = [n  for n in self.network if not self.network.node[n]['nodeObj'].bMeasured] 
         for c in range(self.nChains):  
             # each Markov chain keeps a state matrix
             self.nodeStates.append(self.data)
@@ -256,40 +255,38 @@ class PySBVSigNet:
 
         optLikelihood = float("-inf")
         bConverged = False
-        nIter = 0
         sampleCount = 0
         for nIter in range(maxIter):
             # E-step of EM
             self._updateStates()            
-            if  nIter % 2 == 0:
+            if  (nIter+1) % 2 == 0:
                 sampleCount += 1
                 for c in range(self.nChains):
                     self.expectedStates[c] = self.expectedStates[c] + self.nodeStates[c]
                 
                 
-            # M-step of EM
+            # M-step of EM.  We only update parameters after a collecting a certain number of samples
             if sampleCount >= nSamples:
                 sampleCount = 0
                  # take expectation of sample states
                 self.expectedStates = map(lambda x: x / nSamples, self.expectedStates)
-                self._updteParams(keepRes = True)
+                self._updteParams(alpha)
                 likelihood = self.calcEvidenceMarginal()
-                self.likelihood.append(likelihood) 
-                print "nIter: " + str(nIter) + "; log marginal probability of observed variables: " + str(likelihood)
-                bConverged = self._checkConvergence()
-                
+                self.likelihood.append(likelihood)                 
                 # collect the current best fit models
                 if likelihood > optLikelihood:
+                    optLikelihood = likelihood
                     if pickleDumpFile:
                         cPickle.dump(self, open(pickleDumpFile, 'wb'))
                     else:
                         cPickle.dump(self, open("curBestModels.cpickle", 'wb'))
-                    
+                print "nIter: " + str(nIter) + "; log marginal probability of observed variables: " + str(likelihood)                    
+                bConverged = self._checkConvergence()
                 if bConverged:
                     print "EM converged!"
                     break
                 
-                for c in range(self.nChains):
+                for c in range(self.nChains):  # clear expectedStates
                     self.expectedStates[c] = np.zeros(np.shape(self.data))
 
         return self
@@ -298,7 +295,7 @@ class PySBVSigNet:
             
     def _checkConvergence(self):
         # To do, add convergence checking code
-        if len(self.likelihood) < 25:
+        if len(self.likelihood) < 20:
             return False
             
         ml = np.mean(self.likelihood[-5:-1])
@@ -425,16 +422,16 @@ class PySBVSigNet:
                 else:
                     betaMatrix[rowIndx, curBlockColStart + j] = float(fields[j])                 
                             
-        # scan through the beta matrix and return the first all none zero 
-        # or the last column                    
+        # scan through the beta matrix and return parameter vector with smallest 
+        # lambda with 4 or more paraterms or the last column                    
         for j in range(nLambda):
-            if not np.any(betaMatrix[:, j] == 0.):
-                break
+            if sum(betaMatrix[:,j] != 0.) >= 4:
+                break 
         
         return betaMatrix[:,j]        
       
         
-    def _updteParams(self, alpha = 0.05, keepRes = False):
+    def _updteParams(self, alpha = 0.05):
         # Update the parameter associated with each node, p(n | Pa(n)) using logistic regression,
         # using expected states of precessors as X and current node states acrss samples as y
         nCases, nVariables = np.shape(self.data)
@@ -442,8 +439,7 @@ class PySBVSigNet:
             predIndices = self.dictParentOfNodeToMatrixIndx[nodeId]
             nodeIdx = self.dictNode2MatrixIndx[nodeId]
             
-            if keepRes:
-                self.network.node[nodeId]['nodeObj'].fitResults = []
+            self.network.node[nodeId]['nodeObj'].fitResults = []
 
             for c in range(self.nChains): 
                 if len(predIndices) > 0:  # no parameters if no predecessors
@@ -469,18 +465,17 @@ class PySBVSigNet:
                     
                 
                     # call logistic regression using glmnet from Rpy
-                    fit = glmnet (x, y, alpha = .05, family = "binomial", intercept = 0)
+                    fit = glmnet (x, y, alpha = alpha, family = "binomial", intercept = 0)
                     # extract coefficients from Rpy2 vector object
+#                    print "Fitted params for node " + nodeId + ": " + str(self.parseGlmnetCoef(fit))
                     self.dictNodeParams[nodeId][c,:] = self.parseGlmnetCoef(fit) 
-                    
-                    if keepRes:
-                        self.network.node[nodeId]['nodeObj'].fitResults.append(fit)
+                    self.network.node[nodeId]['nodeObj'].fitResults.append(fit)
         
                 
                 
     def calcEvidenceMarginal(self):
         # collect all evidence nodes
-        evidenceNodes = [n  for n in self.network.nodes() if self.network.node[n]['nodeObj']]  
+        evidenceNodes = [n  for n in self.network if self.network.node[n]['nodeObj'].bMeasured]  
         # calculate the marginal by calcualte probability of instantiation of a
         # node in all samples and average chains and samples 
         logTotalMarginal = 0
@@ -492,6 +487,6 @@ class PySBVSigNet:
                 logProb = np.log(curNodeStates * nodeProb + (1 - curNodeStates) * (1 - nodeProb) )
                 logTotalMarginal += sum(logProb)
                 
-        return logTotalMarginal / c 
+        return logTotalMarginal / self.nChains
         
         
