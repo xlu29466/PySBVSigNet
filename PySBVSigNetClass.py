@@ -120,9 +120,9 @@ class PySBVSigNet:
         # parse edges
         for line in edgeLines:
             #print "Current edge line: " + line
-            source, sink = line.split(',')
+            source, sink = line.rstrip().split(',')
             if source not in self.network or sink not in self.network:
-                print "Cannot add edges between nodes not in the network"
+                print "Cannot add edges between nodes not in the network: " + source + "; " + sink
                 continue
             self.network.add_edge(source, sink)
         print "Added " + str(len(edgeLines)) + " edges.  Done with creating network"
@@ -223,7 +223,7 @@ class PySBVSigNet:
    
     
 
-    def gibbsUpdate(self, nChains = 10, nSamples = 10, maxIter = 1000, p = 0.2, alpha = 0.1):
+    def gibbsUpdate(self, pickleDumpFile = None, nChains = 10, nSamples = 10, maxIter = 1000, p = 0.2, alpha = 0.1):
         """ Sampling the states of hidden variables using Gibbs sampling.
             
             Each node take binary state.
@@ -258,11 +258,7 @@ class PySBVSigNet:
         bConverged = False
         nIter = 0
         sampleCount = 0
-        while not bConverged:
-            nIter +=1
-            if nIter > maxIter:
-                break
-
+        for nIter in range(maxIter):
             # E-step of EM
             self._updateStates()            
             if  nIter % 2 == 0:
@@ -280,21 +276,23 @@ class PySBVSigNet:
                 likelihood = self.calcEvidenceMarginal()
                 self.likelihood.append(likelihood) 
                 print "nIter: " + str(nIter) + "; log marginal probability of observed variables: " + str(likelihood)
+                bConverged = self._checkConvergence()
                 
                 # collect the current best fit models
                 if likelihood > optLikelihood:
-                    bestModels = dict()
-                    for nodeId in self.network:
-                        bestModels[nodeId] = self.network.node[nodeId]['nodeObj'].fitResults
-                    cPickle.dump(bestModels, open("curBestModels.cpickle", 'wb'))
+                    if pickleDumpFile:
+                        cPickle.dump(self, open(pickleDumpFile, 'wb'))
+                    else:
+                        cPickle.dump(self, open("curBestModels.cpickle", 'wb'))
                     
+                if bConverged:
+                    print "EM converged!"
+                    break
+                
                 for c in range(self.nChains):
                     self.expectedStates[c] = np.zeros(np.shape(self.data))
-            
-            bConverged = self._checkConvergence()
-            
-        self.trimEdgeWithLasso()
-        return self.network
+
+        return self
              
             
             
@@ -303,7 +301,7 @@ class PySBVSigNet:
         if len(self.likelihood) < 25:
             return False
             
-        ml = np.mean(self.likelihood[-3:-1])
+        ml = np.mean(self.likelihood[-5:-1])
         ratio = abs(self.likelihood[-1] - ml ) / abs(ml)        
         return ratio <= 0.001
 
@@ -496,15 +494,4 @@ class PySBVSigNet:
                 
         return logTotalMarginal / c 
         
-        
-    def trimEdgeWithLasso(self,  lassoFactor = 1):
-        """ This function set alpha to 1 perform Lasso regression.  The results 
-            is saved in the networks nodes. 
-            
-            Value:  An intance of networkx object, in which the nodes contains
-                    the RPy2 object of last fit
-        """
-        
-        self._updteParams(alpha = lassoFactor , keepRes = True) 
-        return self.network
         
