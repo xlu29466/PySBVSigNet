@@ -141,7 +141,7 @@ class PySBVSigNet:
         """
        
         try:
-            f = open(dataFileName)
+            f = open(dataFileName, 'r')
             lines = f.readlines()
         except IOError:
             print "Fail to read in file " + dataFileName
@@ -233,6 +233,9 @@ class PySBVSigNet:
         """
         nCases, nVariables = np.shape(self.data)
         self.nChains = nChains
+        self.alpha = alpha
+        self.nSamples = nSamples
+        
         self.randomInitParams()
         print "Start Gibbs sampling update."
         
@@ -280,7 +283,7 @@ class PySBVSigNet:
                         cPickle.dump(self, open(pickleDumpFile, 'wb'))
                     else:
                         cPickle.dump(self, open("curBestModels.cpickle", 'wb'))
-                print "nIter: " + str(nIter) + "; log marginal probability of observed variables: " + str(likelihood)                    
+                print "nIter: " + str(nIter + 1) + "; log marginal probability of observed variables: " + str(likelihood)                    
                 bConverged = self._checkConvergence()
                 if bConverged:
                     print "EM converged!"
@@ -295,7 +298,7 @@ class PySBVSigNet:
             
     def _checkConvergence(self):
         # To do, add convergence checking code
-        if len(self.likelihood) < 20:
+        if len(self.likelihood) < 25:
             return False
             
         ml = np.mean(self.likelihood[-5:-1])
@@ -340,7 +343,9 @@ class PySBVSigNet:
         # calculate p(node = 1 | parents);   
             nodeParams = self.dictNodeParams[nodeId][c,:] 
             predStates =  np.column_stack((np.ones(nCases), self.nodeStates[c][:, predIndices])) 
-            pOneCondOnParents = 1 / (1 + np.exp( - np.dot(predStates, nodeParams)))  
+            pOneCondOnParents = 1 / (1 + np.exp( - np.dot(predStates, nodeParams)))
+            pOneCondOnParents[pOneCondOnParents==0] += np.finfo(np.float).eps
+            pOneCondOnParents[pOneCondOnParents==1] -= np.finfo(np.float).eps
             logProbOneCondOnParents  = np.log(pOneCondOnParents)
             logProbZeroCondOnParents = np.log(1 - pOneCondOnParents)
 
@@ -366,6 +371,8 @@ class PySBVSigNet:
                 childPredStatesWithCurSetOne[:, curNodePosInPredList] = np.ones(nCases)  
                 childPredStatesWithCurSetOne = np.column_stack((np.ones(nCases), childPredStatesWithCurSetOne)) # padding data with a column ones as bias
                 pChildCondCurNodeOnes = 1 / (1 + np.exp(-np.dot(childPredStatesWithCurSetOne, childNodeParams)))
+                pChildCondCurNodeOnes[pChildCondCurNodeOnes==0] += np.finfo(np.float).eps  
+                pChildCondCurNodeOnes[pChildCondCurNodeOnes==1] -= np.finfo(np.float).eps
                 logProbDChildCondOne += np.log ( curChildStates * pChildCondCurNodeOnes + (1 - curChildStates) * (1 - pChildCondCurNodeOnes))
         
                 # set the state of the current node (nodeId) to zeros 
@@ -373,6 +380,8 @@ class PySBVSigNet:
                 childPredStatesWithCurSetZero [:, curNodePosInPredList] = np.zeros(nCases)
                 childPredStatesWithCurSetZero = np.column_stack((np.ones(nCases), childPredStatesWithCurSetZero))
                 pChildCondCurNodeZeros = 1 / (1 + np.exp(- np.dot(childPredStatesWithCurSetZero, childNodeParams))) 
+                pChildCondCurNodeZeros[pChildCondCurNodeZeros == 1] -= np.finfo(np.float).eps
+                pChildCondCurNodeZeros[pChildCondCurNodeZeros == 0] += np.finfo(np.float).eps
                 logProdOfChildCondZeros += np.log(curChildStates * pChildCondCurNodeZeros + (1 - curChildStates) * (1 - pChildCondCurNodeZeros))
 
         # now we can calculate the marginal probability of current node 
@@ -484,9 +493,42 @@ class PySBVSigNet:
                 curNodeIndx = self.dictNode2MatrixIndx[node]
                 curNodeStates = self.nodeStates[c][:,curNodeIndx]
                 nodeProb = self._calcNodeMarginal(node, c)
+                nodeProb[nodeProb == 0 ] += np.finfo(np.float).eps
+                nodeProb[nodeProb == 1 ] -= np.finfo(np.float).eps
                 logProb = np.log(curNodeStates * nodeProb + (1 - curNodeStates) * (1 - nodeProb) )
                 logTotalMarginal += sum(logProb)
                 
         return logTotalMarginal / self.nChains
         
+    def getLikelihoodArray(self):
+        return self.likelihood
         
+        
+    def trimNetwork(self):
+        # concatenate samples from different chains to train a large 
+        # glmnet model
+        hiddenNodeStates = self.nodeStates[0]
+        nodeGlmnetFits = dict()
+        for c in range(1, self.nChains):
+            hiddenNodeStates = np.row_stack((hiddenNodeStates, self.nodeStates[c]))
+            
+        for nodeId in self.network:
+            x = hiddenNodeStates[:, self.dictParentOfNodeToMatrixIndx[nodeId]]
+            y = hiddenNodeStates[:, self.dictNode2MatrixIndx[nodeId]]
+            
+            cv = R('cv.glmnet')(x, y,  alpha = self.alpha, family = "binomial", type_measure = "class")
+            nodeGlmnetFits[nodeId] = cv
+            
+            lambdaVec = np.array(cv.rx('lambda')[0])
+            lambdaMin = np.array(cv.rx('lambda.min')[0])[0]
+            diff = lambdaVec - lambdaMin
+            index = np.where(diff == np.min(diff))
+            fit = cv.rx('glmnet.fit')
+            
+            
+            
+        
+            
+            
+            
+            
