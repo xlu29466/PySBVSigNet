@@ -392,9 +392,11 @@ class PySBVSigNet:
     def parseGlmnetCoef(self, glmnet_res):        
         """ Parse the 'beta' matrix returned by calling glmnet through RPy2.
             Return the first column of 'beta' matrix of the glmnet object 
-            with all none zero values returned by the glmnet
+            with 3 or more non-zero values 
             """
-                    
+        # read in intercept; a vector of length of nLambda
+        a0 = glmnet_res.rx('a0')
+        
         # Read in lines of beta matrix txt, which is a nVariables * nLambda.
         # Since we call glmnet by padding x with a column of 1s, we only work
         # with the 'beta' matrix returned by fit
@@ -431,14 +433,9 @@ class PySBVSigNet:
                 else:
                     betaMatrix[rowIndx, curBlockColStart + j] = float(fields[j])                 
                             
-        # scan through the beta matrix and return parameter vector with smallest 
-        # lambda with 4 or more paraterms or the last column                    
-        for j in range(nLambda):
-            if sum(betaMatrix[:,j] != 0.) >= 4:
-                break 
-        
-        return betaMatrix[:,j]        
+        return a0, betaMatrix       
       
+
         
     def _updteParams(self, alpha = 0.05):
         # Update the parameter associated with each node, p(n | Pa(n)) using logistic regression,
@@ -452,7 +449,7 @@ class PySBVSigNet:
 
             for c in range(self.nChains): 
                 if len(predIndices) > 0:  # no parameters if no predecessors
-                    x = np.column_stack((np.ones(nCases), self.expectedStates[c][:, predIndices]))
+                    x =  self.expectedStates[c][:, predIndices]
                     y = self.nodeStates[c][:, nodeIdx]
                     
                     #check if all x and y are of same value, which will lead to problem for glmnet
@@ -464,21 +461,25 @@ class PySBVSigNet:
                     y = robjects.vectors.IntVector(y)
                         
                     allOnes = np.where(np.sum(x[:, 1:nVariables],0) == nCases)
-                    for c in allOnes[0]:
+                    for col in allOnes[0]:
                         rIndx = map(lambda z: int(math.floor(z)), np.random.rand(3) * nCases)
-                        x[rIndx, c+1] = 0 
+                        x[rIndx, col] = 0 
                     allZeros = np.where(np.sum(np.ones(np.shape(x)) - x, 0) == nCases) 
-                    for c in allZeros[0]:
+                    for col in allZeros[0]:
                         rIndx = map(lambda z: int(math.floor(z)), np.random.rand(3) * nCases)
-                        x[rIndx, c] = 1
+                        x[rIndx, col] = 1
                     
                 
                     # call logistic regression using glmnet from Rpy
-                    fit = glmnet (x, y, alpha = alpha, family = "binomial", intercept = 0)
-                    # extract coefficients from Rpy2 vector object
-#                    print "Fitted params for node " + nodeId + ": " + str(self.parseGlmnetCoef(fit))
-                    self.dictNodeParams[nodeId][c,:] = self.parseGlmnetCoef(fit) 
+                    fit = glmnet (x, y, alpha = alpha, family = "binomial")
                     self.network.node[nodeId]['nodeObj'].fitResults.append(fit)
+                    
+                    a0, betaMatrix = self.parseGlmnetCoef(fit) 
+                    for j in range(np.shape(betaMatrix)[1]):
+                        if sum(betaMatrix[:, j]) >= 4:
+                            break
+                      
+                    self.dictNodeParams[nodeId][c,:] = np.copyto(a0[j], betaMatrix[:,j])
         
                 
                 
@@ -505,10 +506,8 @@ class PySBVSigNet:
         
         
     def trimNetwork(self):
-        # concatenate samples from different chains to train a large 
-        # glmnet model
+        # concatenate samples from different chains to train a glmnet using all samples
         hiddenNodeStates = self.nodeStates[0]
-        nodeGlmnetFits = dict()
         for c in range(1, self.nChains):
             hiddenNodeStates = np.row_stack((hiddenNodeStates, self.nodeStates[c]))
             
@@ -517,13 +516,24 @@ class PySBVSigNet:
             y = hiddenNodeStates[:, self.dictNode2MatrixIndx[nodeId]]
             
             cv = R('cv.glmnet')(x, y,  alpha = self.alpha, family = "binomial", type_measure = "class")
-            nodeGlmnetFits[nodeId] = cv
             
-            lambdaVec = np.array(cv.rx('lambda')[0])
-            lambdaMin = np.array(cv.rx('lambda.min')[0])[0]
-            diff = lambdaVec - lambdaMin
-            index = np.where(diff == np.min(diff))
+            
+            # extract the beta values corresponding to the lambda values that has the min error
+            lambdaVec = np.array(cv.rx('lambda')[0]) # lambda values explored by glmnet
+            lambdaMin = np.array(cv.rx('lambda.min')[0])[0] # lambda that give min error
+            diff = lambdaVec - lambdaMin  
+            lambdaMinIndex = np.where(diff == np.min(diff))
             fit = cv.rx('glmnet.fit')
+            glmnetModel  = fit[0][11]
+            a0, betaMatrix = self.parseGlmnetCoef(glmnetModel)
+            betaMinErr = betaMatrix[:,lambdaMinIndex]
+            
+            preds = self.network.predecessors(nodeId)
+            
+            for i in range(len(preds)):
+                if betaMinErr[i] == 0:
+                    self.network.remove_edge(preds[i], nodeId)
+            
             
             
             
