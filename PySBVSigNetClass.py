@@ -395,7 +395,7 @@ class PySBVSigNet:
             with 3 or more non-zero values 
             """
         # read in intercept; a vector of length of nLambda
-        a0 = glmnet_res.rx('a0')
+        a0 = np.array(glmnet_res.rx('a0'))[0]
         
         # Read in lines of beta matrix txt, which is a nVariables * nLambda.
         # Since we call glmnet by padding x with a column of 1s, we only work
@@ -449,7 +449,7 @@ class PySBVSigNet:
 
             for c in range(self.nChains): 
                 if len(predIndices) > 0:  # no parameters if no predecessors
-                    x =  self.expectedStates[c][:, predIndices]
+                    x =  np.column_stack((np.ones(nCases), self.expectedStates[c][:, predIndices]))
                     y = self.nodeStates[c][:, nodeIdx]
                     
                     #check if all x and y are of same value, which will lead to problem for glmnet
@@ -463,24 +463,29 @@ class PySBVSigNet:
                     allOnes = np.where(np.sum(x[:, 1:nVariables],0) == nCases)
                     for col in allOnes[0]:
                         rIndx = map(lambda z: int(math.floor(z)), np.random.rand(3) * nCases)
-                        x[rIndx, col] = 0 
-                    allZeros = np.where(np.sum(np.ones(np.shape(x)) - x, 0) == nCases) 
-                    for col in allZeros[0]:
+                        x[rIndx, col+1] = 0 
+                    allZeros = np.where(np.sum(np.ones(np.shape(x)) - x, 0) == nCases)[0] 
+                    for col in allZeros:
+                        if col == 0:
+                            continue
                         rIndx = map(lambda z: int(math.floor(z)), np.random.rand(3) * nCases)
                         x[rIndx, col] = 1
                     
                 
                     # call logistic regression using glmnet from Rpy
-                    fit = glmnet (x, y, alpha = alpha, family = "binomial")
+                    fit = glmnet (x, y, alpha = alpha, family = "binomial", intercept = 0)
                     self.network.node[nodeId]['nodeObj'].fitResults.append(fit)
                     
                     a0, betaMatrix = self.parseGlmnetCoef(fit) 
+
                     for j in range(np.shape(betaMatrix)[1]):
                         if sum(betaMatrix[:, j]) >= 4:
                             break
-                      
-                    self.dictNodeParams[nodeId][c,:] = np.copyto(a0[j], betaMatrix[:,j])
-        
+                    if j >= len(a0):
+                        j = len(a0) - 1
+                        
+                    self.dictNodeParams[nodeId][c,:] =  betaMatrix[:,j]
+                    
                 
                 
     def calcEvidenceMarginal(self):
@@ -531,7 +536,7 @@ class PySBVSigNet:
             preds = self.network.predecessors(nodeId)
             
             for i in range(len(preds)):
-                if betaMinErr[i] == 0:
+                if betaMinErr[i+1] == 0:  # adding 1 because betaMatrix has an intercept column at 0
                     self.network.remove_edge(preds[i], nodeId)
             
             
