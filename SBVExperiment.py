@@ -5,25 +5,20 @@ Created on Thu Aug 15 21:25:19 2013
 @author: xinghualu
 """
 
-import pickle
+#import pickle
 
 #from SigNetNode import SigNetNode
 from PySBVSigNetClass import PySBVSigNet
 
-
-edgeFile = "Data/Reference_Network.mody20130826.csv"
+edgeFile = "Data/Reference_Network.augmented-08-29-13.csv" 
 #edgeFile = "Data/Reference_Network.csv"
 nodeFile = "Data/Refnet.node.type.csv"
 
 net = PySBVSigNet(nodeFile, edgeFile)
 
 net.assocData("Data/Rat.data.matrix.csv")
+#net.assocData("Data/Rat.data.matrix.csv")
 
-
-trainedNetwork = net.gibbsUpdate(pickleDumpFile="pickles/tmpRat-alpha-02.pickle", alpha = .2)
-
-pickle.dump(trainedNetwork, open("convergedRat-alpha-02.pickle", 'wb'))
-
-
+trainedNetwork = net.gibbsUpdate(pickleDumpFile="pickles/bestRatAugmentedNet-alpha-05.pickle", alpha = .5, nChains = 20)
 
 

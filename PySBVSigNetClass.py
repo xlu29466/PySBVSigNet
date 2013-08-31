@@ -177,6 +177,7 @@ class PySBVSigNet:
         indxNodesToKeep = [x for x in (set(range(nVariables)) - set(indexNodesToDelete))]
         colnames = [x for x in colnames if x not in nameNodeToDelete] 
         self.data = self.data[:, indxNodesToKeep]
+        self.nCases, self.nVariables = np.shape(self.data)
         
         print "Data matrix dimension after cleaning " + str(np.shape(self.data))
             
@@ -479,7 +480,7 @@ class PySBVSigNet:
                     a0, betaMatrix = self.parseGlmnetCoef(fit) 
 
                     for j in range(np.shape(betaMatrix)[1]):
-                        if sum(betaMatrix[:, j]) >= 4:
+                        if sum(betaMatrix[:, j]) >= 3:
                             break
                     if j >= len(a0):
                         j = len(a0) - 1
@@ -515,30 +516,64 @@ class PySBVSigNet:
         hiddenNodeStates = self.nodeStates[0]
         for c in range(1, self.nChains):
             hiddenNodeStates = np.row_stack((hiddenNodeStates, self.nodeStates[c]))
-            
+        
+        nCases, nVariables = np.shape(self.data)
+        nCases *=  self.nChains
         for nodeId in self.network:
-            x = hiddenNodeStates[:, self.dictParentOfNodeToMatrixIndx[nodeId]]
-            y = hiddenNodeStates[:, self.dictNode2MatrixIndx[nodeId]]
-            
-            cv = R('cv.glmnet')(x, y,  alpha = self.alpha, family = "binomial", type_measure = "class")
-            
-            
-            # extract the beta values corresponding to the lambda values that has the min error
-            lambdaVec = np.array(cv.rx('lambda')[0]) # lambda values explored by glmnet
-            lambdaMin = np.array(cv.rx('lambda.min')[0])[0] # lambda that give min error
-            diff = lambdaVec - lambdaMin  
-            lambdaMinIndex = np.where(diff == np.min(diff))
-            fit = cv.rx('glmnet.fit')
-            glmnetModel  = fit[0][11]
-            a0, betaMatrix = self.parseGlmnetCoef(glmnetModel)
-            betaMinErr = betaMatrix[:,lambdaMinIndex]
-            
+            predIndices = self.dictParentOfNodeToMatrixIndx[nodeId]
             preds = self.network.predecessors(nodeId)
             
-            for i in range(len(preds)):
-                if betaMinErr[i+1] == 0:  # adding 1 because betaMatrix has an intercept column at 0
-                    self.network.remove_edge(preds[i], nodeId)
+            if len(predIndices) > 0:
+                x = np.column_stack((np.ones(nCases), hiddenNodeStates[:, predIndices]))
+                y = hiddenNodeStates[:, self.dictNode2MatrixIndx[nodeId]]
+
+                #check if all x and y are of same value, which will lead to problem for glmnet
+                rIndx = map(lambda z: int(math.floor(z)), np.random.rand(10 ) * nCases )
+                if sum(y) == nCases :                        
+                    y[rIndx] = 0                        
+                elif sum( map(lambda x: 1 - x, y)) == nCases:
+                    y[rIndx] = 1        
+                y = robjects.vectors.IntVector(y)
+                        
+                allOnes = np.where(np.sum(x[:, 1:nVariables],0) == nCases)
+                for col in allOnes[0]:
+                    rIndx = map(lambda z: int(math.floor(z)), np.random.rand(10) * nCases)
+                    x[rIndx, col+1] = 0 
+                allZeros = np.where(np.sum(np.ones(np.shape(x)) - x, 0) == nCases)[0] 
+                for col in allZeros:
+                    if col == 0:
+                        continue
+                    rIndx = map(lambda z: int(math.floor(z)), np.random.rand(10) * nCases)
+                    x[rIndx, col] = 1
+              
+                cv = R('cv.glmnet')(x, y,  alpha = self.alpha, intercept = 0, family = "binomial", type_measure = "class")
             
+                # extract the beta values corresponding to the lambda values that has the min error
+                lambdaVec = np.array(cv.rx('lambda')[0]) # lambda values explored by glmnet
+                lambdaMin = np.array(cv.rx('lambda.min')[0])[0] # lambda that give min error
+                diff = lambdaVec - lambdaMin  
+                lambdaMinIndex = np.where(diff == np.min(diff))
+                fit = cv.rx('glmnet.fit')
+                glmnetModel  = fit[0][11]
+                a0, betaMatrix = self.parseGlmnetCoef(glmnetModel)
+                betaMinErr = betaMatrix[:,lambdaMinIndex]
+            
+                for i in range(len(preds)):
+                    if betaMinErr[i+1] == 0:  # adding 1 because betaMatrix has an intercept column at 0
+                        self.network.remove_edge(preds[i], nodeId)
+                        
+    ## Remove the edges of which over certain percent of chains are set to zer0                    
+                        
+    def trimNetworkByConsensus(self, percent):
+        for node in self.network:
+            preds = self.network.predecessors(node)
+            if len(preds) > 0:
+                nodeParams = self.dictNodeParams[node]
+                nChain, nParams = np.shape(nodeParams)
+            
+                for i in range(1, nParams):
+                    if sum(nodeParams[:,i]==0) > math.floor(nChain * percent):
+                        self.network.remove_edge(preds[i-1], node)
             
             
             
