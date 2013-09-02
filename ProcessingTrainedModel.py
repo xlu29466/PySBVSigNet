@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+1# -*- coding: utf-8 -*-
 """
 Created on Thu Aug 29 08:29:35 2013
 
@@ -20,8 +20,8 @@ models = list()
 bestLikelihood = float("-inf")
 bestModelFileName = ""
 for f in files:
-    #if re.search('bestRatAugmentedNet-alpha-01.pickle$', f):
-    if re.search('bestHuman.+?\.pickle$', f):
+    #if re.search('bestHumanAugmentedNet-alpha-03.pickle$', f):
+    if re.search('bestRatAugmented.+?\.pickle$', f):
         print "Loading " + f
         m = cPickle.load(open(f, 'rb'))
         likelihood = m.getLikelihoodArray()[-1]
@@ -34,8 +34,8 @@ print  pickledir + bestModelFileName + ".  \nAlpha: " + str(bestModel.alpha) + "
 print "The number of nodes : " + str(len(bestModel.network.nodes())) + "; the number of edges: " + str(len(bestModel.network.edges()))
 print "Start trimming edges"
 #
-bestModel.trimNetwork()
-#bestModel.trimNetworkByConsensus(0.95)
+#bestModel.trimNetwork()
+bestModel.trimNetworkByConsensus(0.95)
 print "After trimming, the graph has " + str(len(bestModel.network.edges()))
 outf = open (bestModelFileName+"network_edges.csv", 'w')
 seenNodes = set()

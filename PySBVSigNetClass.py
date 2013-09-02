@@ -125,7 +125,9 @@ class PySBVSigNet:
                 print "Cannot add edges between nodes not in the network: " + source + "; " + sink
                 continue
             self.network.add_edge(source, sink)
-        print "Added " + str(len(edgeLines)) + " edges.  Done with creating network"
+        
+        self.trimLeaves()
+        print "Created a network with " + str(len(self.network.nodes())) + " nodes and " + str(len(self.network.edges())) + " edges"
         
 
     def assocData(self, dataFileName):
@@ -561,7 +563,9 @@ class PySBVSigNet:
                 for i in range(len(preds)):
                     if betaMinErr[i+1] == 0:  # adding 1 because betaMatrix has an intercept column at 0
                         self.network.remove_edge(preds[i], nodeId)
-                        
+
+        self.trimLeaves()
+
     ## Remove the edges of which over certain percent of chains are set to zer0                    
                         
     def trimNetworkByConsensus(self, percent):
@@ -575,10 +579,28 @@ class PySBVSigNet:
                     if sum(nodeParams[:,i]==0) > math.floor(nChain * percent):
                         self.network.remove_edge(preds[i-1], node)
             
-            
+        self.trimLeaves
+    
+    def trimLeaves(self):
+        while True: 
+            nodesToRemove = list()
+            nRemoved = 0
+            for node in self.network:
+                children = self.network.successors(node)
+                if len(children) == 0 and not self.network.node[node]['nodeObj'].bMeasured:
+                    nodesToRemove.append(node)
+
+            if len(nodesToRemove)  == 0:
+                break
+
+            for node in nodesToRemove:
+                self.network.remove_node(node)
+                
             
         
             
+                
             
-            
+
+
             
